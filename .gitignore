@@ -1,0 +1,21 @@
+# Secrets et environnement local
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Données générées localement : elles peuvent être régénérées
+data/offres.ndjson
+data/access.log
+data/offres_test.ndjson
+logstash/data/
+
+# Système et éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
