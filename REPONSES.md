@@ -52,7 +52,7 @@ Le paramètre `fuzziness: AUTO` permet de corriger la faute `kubernetis`. Le poi
 
 ### Exercice 3.4
 
-Le bloc `should` augmente le score des documents dont les compétences contiennent `Elasticsearch`, sans rendre cette compétence obligatoire. Sans ce bloc, le classement dépend uniquement du texte placé dans `must`. Les critères exacts sont placés dans `filter` car ils ne nécessitent pas de calcul de score et peuvent être mis en cache, ce qui améliore les performances. Dans le filtre d’exemple du fichier de requêtes, le mot `data` est utilisé pour cibler les postes Data Engineer/Data Scientist : le jeu généré ne contient pas le terme `données` dans les titres ou descriptions concernés.
+Pour respecter l’énoncé, les requêtes booléennes utilisent le terme « données ». Le jeu généré contient des titres « Administrateur Bases de Données », que l’analyseur français permet de retrouver. Avec les filtres de l’exercice, 25 offres correspondent.
 
 ### Exercice 3.5
 
