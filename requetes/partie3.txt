@@ -103,7 +103,7 @@ GET offres/_search
       "must": [
         {
           "multi_match": {
-            "query": "data",
+            "query": "données",
             "fields": ["titre", "description"]
           }
         }
@@ -158,7 +158,7 @@ GET offres/_search
       "must": [
         {
           "multi_match": {
-            "query": "data",
+            "query": "données",
             "fields": ["titre", "description"]
           }
         }
