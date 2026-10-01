@@ -1,0 +1,107 @@
+# Crée d'abord dans Kibana une data view Logs web sur logs-web-* avec @timestamp.
+# Régler la plage absolue sur 23/09/2026 00:00 à 30/09/2026 00:00 (heure de Paris).
+
+# 4.1 Répartition par statut HTTP et méthode
+FROM logs-web-default
+| STATS requetes = COUNT(*) BY http.response.status_code
+| SORT requetes DESC
+
+FROM logs-web-default
+| STATS requetes = COUNT(*) BY http.request.method
+| SORT requetes DESC
+
+# Volume moyen journalier
+FROM logs-web-default
+| STATS requetes = COUNT(*) BY jour = BUCKET(@timestamp, 1 day)
+| STATS moyenne_requetes_par_jour = AVG(requetes)
+
+# 4.2 Repérer d'abord les heures avec le plus de réponses 5xx,
+# puis relancer en remplaçant 1 hour par 5 minutes.
+FROM logs-web-default
+| WHERE http.response.status_code >= 500
+| STATS erreurs = COUNT(*) BY periode = BUCKET(@timestamp, 1 hour)
+| SORT erreurs DESC
+| LIMIT 20
+
+FROM logs-web-default
+| WHERE http.response.status_code >= 500
+| STATS erreurs = COUNT(*) BY periode = BUCKET(@timestamp, 5 minutes)
+| SORT periode ASC
+
+# Détail de l'incident connu : 28/09/2026 14:00-14:45 heure de Paris.
+# Dans Elasticsearch, utiliser l'équivalent UTC : 12:00-12:45.
+FROM logs-web-default
+| WHERE @timestamp >= "2026-09-28T12:00:00Z" AND @timestamp < "2026-09-28T12:45:00Z"
+| STATS erreurs = COUNT(*) WHERE http.response.status_code >= 500 BY url.original
+| SORT erreurs DESC
+
+# URL qui ont renvoyé des erreurs serveur
+FROM logs-web-default
+| WHERE http.response.status_code >= 500
+| STATS erreurs = COUNT(*) BY url.original
+| SORT erreurs DESC
+
+# Volume par URL touchée par l'incident et par intervalle de 5 minutes
+FROM logs-web-default
+| WHERE http.response.status_code >= 500
+| STATS erreurs = COUNT(*) BY periode = BUCKET(@timestamp, 5 minutes), url.original
+| SORT periode ASC
+
+# 4.3 IP responsables des réponses 404
+FROM logs-web-default
+| WHERE http.response.status_code == 404
+| STATS erreurs_404 = COUNT(*), debut = MIN(@timestamp), fin = MAX(@timestamp) BY source.address
+| SORT erreurs_404 DESC
+| LIMIT 20
+
+# Détail de la rafale suspecte connue : 26/09/2026 03:12-03:17 heure de Paris.
+# Dans Elasticsearch, utiliser l'équivalent UTC : 01:12-01:17.
+FROM logs-web-default
+| WHERE @timestamp >= "2026-09-26T01:12:00Z" AND @timestamp < "2026-09-26T01:17:00Z"
+| STATS requetes = COUNT(*), codes = VALUES(http.response.status_code), agents = VALUES(user_agent.original) BY source.address
+| SORT requetes DESC
+
+# URLs demandées par l'IP suspecte : remplacer l'adresse après l'avoir trouvée
+FROM logs-web-default
+| WHERE http.response.status_code == 404 AND source.address == "<IP_SUSPECTE>"
+| STATS requetes = COUNT(*) BY url.original, user_agent.original
+| SORT requetes DESC
+
+# Distinguer les 404 isolées des rafales suspectes
+FROM logs-web-default
+| WHERE http.response.status_code == 404
+| STATS nombre = COUNT(*) BY source.address, user_agent.name
+| SORT nombre DESC
+
+# 4.4 Offres les plus consultées (IDs à réutiliser dans une requête sur offres)
+FROM logs-web-default
+| WHERE http.request.method == "GET" AND http.response.status_code == 200 AND labels.offre_id IS NOT NULL
+| STATS consultations = COUNT(*) BY labels.offre_id
+| SORT consultations DESC
+| LIMIT 10
+
+# Après avoir copié les dix IDs du résultat précédent, récupérer leurs offres
+GET offres/_search
+{
+  "size": 10,
+  "query": {
+    "terms": {
+      "id": [
+        "OFF-04662", "OFF-01153", "OFF-03141", "OFF-00901", "OFF-02899",
+        "OFF-03524", "OFF-00289", "OFF-01275", "OFF-03145", "OFF-03126"
+      ]
+    }
+  },
+  "_source": ["id", "titre", "ville", "contrat"]
+}
+
+# 4.5 Navigateurs et OS
+FROM logs-web-default
+| STATS requetes = COUNT(*) BY user_agent.name
+| SORT requetes DESC
+| LIMIT 10
+
+FROM logs-web-default
+| STATS requetes = COUNT(*) BY user_agent.os.name
+| SORT requetes DESC
+| LIMIT 10

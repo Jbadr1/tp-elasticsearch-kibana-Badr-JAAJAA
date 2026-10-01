@@ -1,0 +1,23 @@
+# Rôle à créer dans Kibana > Outils de développement.
+# Ne pas mettre le mot de passe dans ce fichier.
+POST _security/role/logstash_writer
+{
+  "cluster": ["monitor", "manage_index_templates"],
+  "indices": [
+    {
+      "names": ["offres", "logs-web-*"],
+      "privileges": ["write", "create", "create_index", "auto_configure"]
+    }
+  ]
+}
+
+# Créer l'utilisateur en remplaçant <MOT_DE_PASSE_LOCAL> dans Kibana seulement.
+POST _security/user/logstash_internal
+{
+  "password": "<MOT_DE_PASSE_LOCAL>",
+  "roles": ["logstash_writer"],
+  "full_name": "Logstash - ingestion"
+}
+
+# Vérifier après l'ingestion
+GET offres/_count

@@ -85,3 +85,145 @@ Pour les 462 offres Data Engineer, les cinq compétences les plus fréquentes so
 Le script `search.py` utilise une requête `bool`, une recherche `multi_match`, des filtres facultatifs, la pagination, le surlignage et trois facettes : villes, contrats et compétences.
 
 
+---
+
+# TP2 Logstash — comparaison et réponses
+
+## Comparaison avec le TP fait hier
+
+Le travail d'hier correspond au TP1 : Elasticsearch et Kibana sous Docker, index `offres`, mapping strict, ingestion Python, recherche et agrégations.
+
+Le dépôt GitHub a été mis à jour avec le kit TP2. La capture fournie montre le nouveau commit « add: kit TP2 sorry ». Mon premier clonage datait de la révision précédente ; ma remarque disant que les configurations et le générateur manquaient était donc erronée.
+
+Deux différences à conserver en tête :
+
+- Le `docker-compose.yml` de TP1 sur GitHub contient toujours l'ancienne commande du service `setup`. Garde la version corrigée par ton professeur, celle que tu as utilisée hier.
+- Le kit TP2 officiel contient désormais `docker-compose.override.yml`, `pipelines.yml`, les deux pipelines et `generate_access_logs.py`. L'archive inclut ces fichiers officiels tels quels.
+
+## Mise en place
+
+- Un compte `logstash_internal` limite les droits d'écriture de Logstash aux index `offres` et `logs-web-*`. Le compte `elastic` est administrateur : il ne doit pas être utilisé par le pipeline.
+- Une écriture dans `logs-generic-default` doit être refusée, car ce nom n'est pas dans les index autorisés du rôle.
+- Le secret est conservé dans `.env`, puis transmis par variable d'environnement. Il ne doit pas être écrit dans les fichiers `.conf` ou versionné dans Git.
+- `--path.data /tmp/essai` donne à l'instance éphémère un répertoire de données propre.
+- Pour le pipeline stdin, `@timestamp` correspond au moment où Logstash reçoit la phrase.
+
+## Partie 1 — Recharger les offres
+
+Le pipeline lit chaque objet JSON du fichier. Le filtre supprime `@timestamp`, `@version`, `event`, `log` et `host`, ajoutés par Logstash et refusés par le mapping strict. Il écrit ensuite dans l'index déjà créé `offres`, avec l'identifiant métier `id` comme `_id`.
+
+Résultat attendu : 5 000 documents. Une nouvelle lecture ne double pas le nombre, car chaque document reprend le même `_id` et l'action `index` remplace l'ancienne version. Sans `document_id`, Elasticsearch générerait un nouvel identifiant à chaque passage.
+
+Avec `sincedb_path => "/dev/null"`, Logstash ne mémorise pas la position du fichier et le relit au redémarrage. Avec une sincedb persistante, il reprend à la position enregistrée.
+
+Le mapping strict protège la forme des documents métier. Le pipeline retire donc les métadonnées supplémentaires au lieu d'élargir le mapping.
+
+## Partie 2 — Supervision et fiabilité
+
+- `in` compte les événements reçus, `filtered` ceux traités par le filtre et `out` ceux transmis à la sortie, depuis le démarrage du pipeline. Les durées par plugin permettent d'identifier l'étape la plus coûteuse.
+- La DLQ conserve sur disque des événements rejetés pour une erreur non temporaire, comme une erreur de mapping. `helpers.bulk(..., raise_on_error=False)` affiche les erreurs et poursuit le lot, mais ne constitue pas une file de reprise.
+- Sans `pipelines.yml`, les fichiers du dossier sont concaténés en un seul pipeline `main`; chaque événement peut traverser les filtres et sorties des deux flux. Les pipelines séparés isolent les flux et ont leurs propres compteurs, workers et files.
+- Une file mémoire est perdue si Logstash est tué avant l'envoi. `queue.type: persisted` écrit la file sur disque et offre une livraison « au moins une fois ». Un identifiant stable évite alors les doublons à la destination.
+
+Pour traiter un document de la DLQ : lire la cause et l'événement, corriger les données ou le pipeline, puis rejouer l'événement corrigé et vérifier sa présence dans Elasticsearch.
+
+## Partie 3 — Logs d'accès
+
+Le générateur officiel produit **20 700 lignes** sur sept jours. Le pipeline `web` applique `COMBINEDAPACHELOG`, convertit la date anglaise en `@timestamp`, enrichit le navigateur, extrait l'identifiant des URLs `/offres/OFF-xxxxx` vers `labels.offre_id`, puis écrit dans le data stream `logs-web-default`.
+
+Les logs sont horodatés avec le fuseau `+0200`. Kibana peut les afficher à l'heure locale du navigateur ; Elasticsearch les stocke en UTC.
+
+Résultats attendus après une première ingestion : 20 700 documents, zéro échec Grok. Lors d'une nouvelle lecture, le data stream reçoit de nouveaux documents et le compteur peut doubler, car les événements n'ont pas de `_id` stable. Pour éviter cela, on peut laisser une sincedb persistante pour ne pas relire les anciennes lignes ou calculer un identifiant de contenu reproductible avec `fingerprint` (en respectant les contraintes d'écriture du data stream).
+
+## Partie 4 — Enquête : résultats du générateur officiel
+
+Ces chiffres ont été calculés à partir de `generate_access_logs.py` avec ses paramètres par défaut (`--lignes 20000 --seed 42`). Il faut exécuter Kibana sur le même fichier pour confirmer les résultats d'indexation.
+
+### 4.1 Vue d'ensemble
+
+| Statut HTTP | Nombre |
+| --- | ---: |
+| 200 | 17 805 |
+| 201 | 1 492 |
+| 404 | 508 |
+| 304 | 488 |
+| 503 | 402 |
+| 500 | 5 |
+
+| Méthode | Nombre |
+| --- | ---: |
+| GET | 19 208 |
+| POST | 1 492 |
+
+La moyenne est de **2 957 requêtes par jour** (20 700 / 7). Les volumes réels varient selon les jours, car les événements sont répartis aléatoirement.
+
+### 4.2 Incident
+
+- **Jour :** lundi 28 septembre 2026.
+- **Créneau :** 14 h 00 à 14 h 45, heure de Paris (12 h 00 à 12 h 45 UTC).
+- **Impact :** 402 réponses 503 pendant ces 45 minutes. Les cinq réponses 500 du jeu sont des erreurs isolées hors de cette plage.
+- **URL touchée :** l'API `/api/offres` avec différents paramètres de ville et de page. Les autres familles de routes ne reçoivent pas de 5xx pendant l'incident.
+- Le générateur ajoute 400 requêtes 503 pour simuler une hausse de trafic liée aux tentatives de répétition. Dans la fenêtre, on compte 478 requêtes au total, dont 402 sont en 503.
+
+Les URL exactes en erreur sont regroupées par `url.original` par la requête fournie dans `enquete.txt`.
+
+### 4.3 Activité suspecte
+
+- **IP :** `203.0.113.66`.
+- **Période :** 26 septembre 2026, de 03:12:00 à 03:16:59 (heure de Paris), soit une rafale de cinq minutes.
+- **Nombre :** 300 requêtes 404, une par seconde.
+- **User-Agent :** `Mozilla/5.0 zgrab/0.x`, signature d'un outil de scan plutôt que d'un navigateur habituel.
+
+| URL recherchée | Nombre |
+| --- | ---: |
+| `/admin` | 59 |
+| `/.git/config` | 55 |
+| `/.env` | 53 |
+| `/phpmyadmin/` | 46 |
+| `/server-status` | 44 |
+| `/wp-login.php` | 43 |
+
+Les **208 autres 404** sont dispersées entre différentes adresses et correspondent principalement à des identifiants d'offres inexistants générés aléatoirement. Elles ne forment pas une rafale comparable.
+
+### 4.4 Offres les plus consultées
+
+Les dix identifiants à rechercher dans l'index `offres` sont : `OFF-04662`, `OFF-01153`, `OFF-03141`, `OFF-00901`, `OFF-02899`, `OFF-03524`, `OFF-00289`, `OFF-01275`, `OFF-03145`, `OFF-03126`.
+
+| ID | Consultations | Titre | Ville | Contrat |
+| --- | ---: | --- | --- | --- |
+| OFF-04662 | 8 | Développeur Front-end Senior | Bordeaux | Freelance |
+| OFF-01153 | 7 | Développeur Java Confirmé | Toulouse | Freelance |
+| OFF-03141 | 7 | Développeur Python Confirmé | Bordeaux | CDI |
+| OFF-00901 | 6 | Développeur Java Junior | Paris | CDI |
+| OFF-02899 | 6 | Data Engineer (Alternance) | Lyon | Alternance |
+| OFF-03524 | 6 | Développeur Python (Alternance) | Toulouse | Alternance |
+| OFF-00289 | 6 | Data Scientist Lead | Lyon | CDI |
+| OFF-01275 | 6 | Administrateur Bases de Données Lead | Paris | CDI |
+| OFF-03145 | 6 | Data Engineer Lead | Montpellier | CDI |
+| OFF-03126 | 6 | Administrateur Bases de Données Junior | Lyon | CDI |
+
+La requête Dev Tools correspondante est dans `enquete.txt`.
+
+### 4.5 Public
+
+En considérant iOS et Android comme appareils mobiles, on obtient 8 155 requêtes, soit **39,4 %** du trafic. Les navigateurs les plus utilisés dans les chaînes générées sont Safari (8 249), Chrome (8 114), puis Firefox (4 037). La valeur `zgrab` est identifiée comme robot, pas comme navigateur grand public.
+
+## Partie 5 — Tableau de bord
+
+Dans Lens, créer le tableau de bord « Site de recrutement — trafic » avec les panneaux suivants :
+
+1. Indicateur du nombre de requêtes.
+2. Indicateur taux d'erreur serveur : `count(kql='http.response.status_code >= 500') / count()`, format pourcentage.
+3. Barres empilées : `@timestamp` par intervalle, ventilé par `http.response.status_code`.
+4. Tableau des dix valeurs principales de `labels.offre_id`.
+5. Anneau des cinq valeurs principales de `user_agent.name`.
+6. Carte utilisant la data view `offres` et le champ géographique `localisation`.
+
+Activer l'interaction croisée puis tester un clic sur le code 503. La capture doit être prise dans Kibana après avoir importé les logs et choisi la plage absolue du TP.
+
+
+## Éléments à compléter avant le dépôt
+
+- Exécuter le pipeline Logstash localement et relever les compteurs réels `in`, `filtered` et `out` dans `requetes/logstash.txt` ; ils dépendent de l’exécution, donc ils ne sont pas inventés ici.
+- Créer le tableau de bord Lens dans Kibana, enregistrer la capture réelle dans `captures/tableau-de-bord.png`, puis l’ajouter au dépôt.
+- Si l’enseignant demande une preuve du TP01, ajouter également une capture réelle Discover/Dev Tools dans `captures/`.
