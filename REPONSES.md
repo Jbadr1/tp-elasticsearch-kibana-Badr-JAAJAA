@@ -222,8 +222,31 @@ Dans Lens, créer le tableau de bord « Site de recrutement — trafic » avec l
 Activer l'interaction croisée puis tester un clic sur le code 503. La capture doit être prise dans Kibana après avoir importé les logs et choisi la plage absolue du TP.
 
 
-## Éléments à compléter avant le dépôt
+## Vérifications finales du TP2
 
-- Exécuter le pipeline Logstash localement et relever les compteurs réels `in`, `filtered` et `out` dans `requetes/logstash.txt` ; ils dépendent de l’exécution, donc ils ne sont pas inventés ici.
-- Créer le tableau de bord Lens dans Kibana, enregistrer la capture réelle dans `captures/tableau-de-bord.png`, puis l’ajouter au dépôt.
-- Si l’enseignant demande une preuve du TP01, ajouter également une capture réelle Discover/Dev Tools dans `captures/`.
+### Supervision et rejeu
+
+Lors du premier chargement, les pipelines `offres` et `web` tournaient chacun avec 12 workers et un lot de 125 événements. Les compteurs observés étaient :
+
+| Pipeline | in | filtered | out |
+| --- | ---: | ---: | ---: |
+| offres | 5 000 | 5 000 | 5 000 |
+| web | 20 700 | 20 700 | 20 700 |
+
+La sortie Elasticsearch consommait le plus de temps. Lors de cette mesure, elle a duré environ 32,9 s pour `offres` et 98,9 s pour `web`. Le traitement Grok du pipeline `web` a duré environ 24,7 s.
+
+Le rejeu du fichier de logs a fait passer le compteur à 41 400, car `sincedb_path => "/dev/null"` relit le fichier et le data stream ne possède pas d’identifiant stable pour empêcher les doublons. Après suppression du data stream et un seul nouveau chargement, le total final est revenu à **20 700**. Les offres restent à **5 000**, car le pipeline réutilise leur identifiant métier avec `document_id => "%{id}"`.
+
+### Dead letter queue
+
+L’événement `OFF-99999`, lu depuis `/data/offres_test.ndjson`, contenait le champ supplémentaire `prime: 3000`. Elasticsearch l’a rejeté avec le statut HTTP 400 et l’exception `strict_dynamic_mapping_exception`, car le mapping strict de `offres` n’autorise pas ce champ. La DLQ a conservé l’événement et la cause du rejet dans `[@metadata][dead_letter_queue]`. L’index `offres` est resté à 5 000 documents et `OFF-99999` n’y a pas été trouvé.
+
+Pour traiter cet événement, il faut lire la cause, corriger le document ou le mapping selon le besoin métier, puis rejouer l’événement corrigé et vérifier son indexation. Contrairement à `helpers.bulk(..., raise_on_error=False)`, la DLQ conserve l’événement rejeté pour permettre son analyse et sa reprise.
+
+### Vérifications du data stream
+
+Le data stream `logs-web-default` contient **20 700 événements** après le chargement propre et **0 échec Grok**. Son index caché est `.ds-logs-web-default-2026.10.02-000001`, en mode `logsdb`. Le premier événement est daté du `2026-09-22T22:00:39.000Z`, soit le 23 septembre à 00:00:39 avec le fuseau `+0200`. Le champ `http.response.status_code` est de type `long`, ce qui permet les comparaisons numériques et les agrégations.
+
+### Tableau de bord
+
+Le tableau de bord Kibana comporte les six visualisations demandées. Après le chargement propre, il affiche **20 700 requêtes** et un taux d’erreurs serveur de **1,97 %**. Le clic sur le statut 503 a bien filtré le tableau de bord. La capture finale est enregistrée dans `captures/Tableau de bord.png`.
