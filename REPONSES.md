@@ -250,3 +250,9 @@ Le data stream `logs-web-default` contient **20 700 événements** après le cha
 ### Tableau de bord
 
 Le tableau de bord Kibana comporte les six visualisations demandées. Après le chargement propre, il affiche **20 700 requêtes** et un taux d’erreurs serveur de **1,97 %**. Le clic sur le statut 503 a bien filtré le tableau de bord. La capture finale est enregistrée dans `captures/Tableau de bord.png`.
+
+### Bonus — Règle d’alerte
+
+La règle Kibana `TP2 - Plus de 50 erreurs serveur en 5 minutes` est activée. Elle compte les événements de `logs-web-*` dont le statut HTTP est supérieur ou égal à 500 sur les cinq dernières minutes. Elle vérifie la condition chaque minute et écrit une action dans le journal Kibana via le connecteur `TP2 - Server log`.
+
+Aucune alerte ne se déclenche avec les logs du TP, car leurs dates sont anciennes et ils ne se trouvent pas dans la fenêtre des cinq dernières minutes. Pour tester la règle, il faudrait envoyer plus de 50 événements 5xx avec des horodatages récents, vérifier l’alerte et l’action dans Kibana, puis supprimer les données créées pour le test.
